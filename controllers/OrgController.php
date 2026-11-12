@@ -1,251 +1,175 @@
 <?php
-// Organization catalogue + single organization page
-// the 2 functions here are what the router in index.php calls:
-//   index.php?page=organizations       -> index()
-//   index.php?page=org&id=3            -> show()
-//
-// member 4 added the org settings part at the bottom:
-//   index.php?page=orgsettings&id=3    -> settings()
-//   index.php?page=saveinfo            -> updateInfo()     (POST)
-//   index.php?page=changerole          -> changeRole()     (POST)
-//   index.php?page=removemember        -> removeMember()   (POST)
+require_once 'Controller.php';
+
+// organizations, org and orgsettings pages
 class OrgController extends Controller {
-    private $orgs;
 
-    function __construct($db) {
-        // the parent constructor sets up $this->db and $this->users for us
-        parent::__construct($db);
-        $this->orgs = new OrgModel($db);
+    function catalog() {
+        $this->needLogin();
+        $q = strtolower(trim($_GET['q'] ?? ''));
+        $cat = $_GET['category'] ?? 'all';
+        $rec = $_GET['rec'] ?? 'all';
+
+        $mine = [];
+        foreach ($this->orgs->myOrgs($this->user['student_id']) as $m) $mine[$m['org_id']] = strtolower($m['role_name']);
+
+        $all = $this->orgs->all();
+        $list = [];
+        foreach ($all as $o) {
+            if ($q != '' && stripos($o['name'] . ' ' . $o['description'], $q) === false) continue;
+            if ($rec == 'open' && !$o['recruiting'] || $rec == 'closed' && $o['recruiting']) continue;
+            if ($cat != 'all' && $o['category'] != $cat) continue;
+            $o['role'] = $mine[$o['org_id']] ?? 'none';
+            $list[] = $o;
+        }
+        $slides = array_slice(array_filter($all, fn($o) => $o['recruiting']), 0, 3);
+        return $this->data(['slides' => $slides, 'list' => $list, 'q' => $q, 'cat' => $cat, 'rec' => $rec]);
     }
 
-    // the catalogue: carousel + search + filters + the grid of org cards
-    function index() {
-        $user = $this->needLogin();
-
-        // the search form uses method="get", so everything it sends is in $_GET
-        // "?? ''" means: if it is missing, use an empty value instead of crashing
-        $q = trim($_GET['q'] ?? '');
-        $category = $_GET['category'] ?? 'all';
-        $recruiting = $_GET['recruiting'] ?? 'all';
-
-        $list = $this->orgs->search($q, $category, $recruiting);
-
-        // short version of the description for the cards
-        foreach ($list as $i => $o) {
-            $list[$i]['short'] = $this->shorten($o['description'], 90);
-        }
-
-        // carousel = first 3 orgs that are recruiting (ignores the filters, like in phase 1)
-        $featured = array_slice($this->orgs->search('', 'all', 'open'), 0, 3);
-        foreach ($featured as $i => $o) {
-            $featured[$i]['short'] = $this->shorten($o['description'], 100);
-        }
-
-        $this->view('organizations', [
-            'list' => $list,
-            'featured' => $featured,
-            'myRoles' => $this->orgs->rolesOfUser($user['user_id']),
-            'categories' => $this->orgs->categories,
-            // send the filters back so the form still shows what the user picked
-            'q' => $q,
-            'category' => $category,
-            'recruiting' => $recruiting
-        ]);
-    }
-
-    // one organization: details, officers, member count and my own role
-    function show() {
-        $user = $this->needLogin();
-
-        // (int) turns the text from the url into a number, so "abc" becomes 0
+    function detail() {
+        $this->needLogin();
         $id = (int)($_GET['id'] ?? 0);
-        $org = $this->orgs->findById($id);
+        $org = $this->orgs->find($id);
+        if (!$org) return $this->data(['org' => null]);
 
-        // wrong id? go back to the catalogue with an error toast
-        if (!$org) {
-            $this->flash('error', 'Organization not found');
-            $this->go('organizations');
+        $acc = $this->access($id);
+        if ($this->isPost()) {
+            $this->apply($org, $acc['role']);
+            $this->go("org.php?id=$id");
         }
 
-        // null when the user is not a member of this org
-        $myRole = $this->orgs->roleOf($user['user_id'], $id);
-
-        // admins can manage every org, students only if their role has can_manage
-        $canManage = $user['role'] == 'admin' || ($myRole && $myRole['can_manage']);
-
-        // member 4: events + announcements cards. members-only announcements are only for members and admins
-        if ($myRole || $user['role'] == 'admin') {
-            $announcements = AnnouncementModel::getAll($id);
-        } else {
-            $announcements = AnnouncementModel::getAll($id, 'public');
-        }
-
-        $this->view('org', [
+        $sid = $this->user['student_id'];
+        $members = $this->orgs->members($id);
+        $anns = array_filter($this->orgs->announcements($id), fn($a) => $a['visibility'] != 'members' || $acc['role'] != 'none' || $this->user['role'] == 'admin');
+        return $this->data([
             'org' => $org,
-            'officers' => $this->orgs->officers($id),
-            'myRole' => $myRole,
-            'canManage' => $canManage,
-            'events' => EventModel::getAll($id),
-            'announcements' => $announcements
+            'my_role' => $acc['role'],
+            'manager' => $acc['manager'],
+            'president' => $acc['president'],
+            'pendMember' => $this->orgs->hasPending($sid, $id, 'member'),
+            'pendOfficer' => $this->orgs->hasPending($sid, $id, 'officer'),
+            'pendResign' => $this->orgs->hasPending($sid, $id, 'resign'),
+            'memberCount' => count($members),
+            'leaders' => array_filter($members, fn($m) => $m['role_name'] != 'Member'),
+            'events' => $this->orgs->events($id),
+            'upcoming' => count($this->orgs->upcoming($id)),
+            'anns' => $anns,
+            'appCount' => count($this->orgs->applications($id)),
+            'resCount' => count($this->orgs->resignations($id))
         ]);
     }
 
-    // cuts long text and adds ... at the end
-    private function shorten($text, $max) {
-        if (strlen($text) <= $max) return $text;
-        // mb_substr doesn't cut special characters in half, but not every server has it,
-        // so we fall back to normal substr
-        $cut = function_exists('mb_substr') ? mb_substr($text, 0, $max) : substr($text, 0, $max);
-        return $cut . '...';
+    // apply to join, apply for officer or resign
+    private function apply($org, $role) {
+        $type = $this->post('type');
+        $reason = $this->post('reason');
+        $sid = $this->user['student_id'];
+        $id = $org['org_id'];
+
+        if ($reason == '') return $this->flash('error', 'Please explain your request.');
+        if (!$sid || !in_array($type, ['member', 'officer', 'resign'])) return $this->flash('error', 'This request is no longer available.');
+        if ($this->orgs->hasPending($sid, $id, $type)) return $this->flash('error', 'You already submitted this request.');
+
+        if ($type == 'resign' && $role != 'none' && $role != 'president') {
+            $this->orgs->resign($sid, $id, $reason);
+            $this->flash('success', 'Resignation request submitted.');
+        } elseif (($type == 'member' && $role == 'none' && $org['recruiting']) || ($type == 'officer' && $role == 'member' && $org['officer_hiring'])) {
+            $this->orgs->apply($sid, $id, $type, $reason);
+            $this->flash('success', 'Application submitted for review.');
+        } else {
+            $this->flash('error', 'This request is no longer available.');
+        }
     }
 
-    // ---------------------------------------------------------------
-    // member 4: org settings
-    // ---------------------------------------------------------------
-
-    // the org settings page: info, events, announcements and members of one org
     function settings() {
-        $user = $this->needLogin();
-
-        $myOrgs = MemberModel::managedOrgs($user);
-        if (count($myOrgs) == 0) {
-            $this->flash('error', 'You do not manage any organization');
-            $this->go('organizations');
+        $this->needLogin();
+        $list = $this->orgs->managed($this->user);
+        if (!$list) {
+            $this->flash('error', 'You dont have access to org settings');
+            $this->go('dashboard.php');
+        }
+        $cur = $list[0]['org_id'];
+        foreach ($list as $o) {
+            if ($o['org_id'] == ($_GET['id'] ?? 0)) $cur = $o['org_id'];
+        }
+        if ($this->isPost()) {
+            $this->settingsPost($cur);
+            $this->go("orgsettings.php?id=$cur");
         }
 
-        // no id in the url (navbar link)? open the first org he can manage
-        $id = (int)($_GET['id'] ?? 0);
-        if ($id == 0) {
-            $id = $myOrgs[0]['org_id'];
-        }
-
-        $org = $this->orgs->findById($id);
-        if (!$org) {
-            $this->flash('error', 'Organization not found');
-            $this->go('organizations');
-        }
-
-        // enforces role check: Only allow if the user can manage the organization
-        if (!($user['role'] == 'admin' || canManageOrg($user['user_id'], $id))) {
-            $this->flash('error', 'Access Denied: You do not have permission to manage this organization.');
-            $this->go('org&id=' . $id);
-        }
-
-        $this->view('orgsettings', [
-            'org' => $org,
-            'myOrgs' => $myOrgs,
-            'events' => EventModel::getAll($id),
-            'announcements' => AnnouncementModel::getAll($id),
-            'members' => MemberModel::getOrgMembers($id),
-            // only the president (or an admin) can change roles and remove members
-            'isPres' => $user['role'] == 'admin' || isPresident($user['user_id'], $id)
+        $acc = $this->access($cur);
+        $members = $this->orgs->members($cur);
+        $apps = $this->orgs->applications($cur);
+        $anns = $this->orgs->announcements($cur);
+        return $this->data([
+            'list' => $list,
+            'cur' => $cur,
+            'org' => $this->orgs->find($cur),
+            'myrole' => $this->user['role'] == 'admin' ? 'admin' : $acc['role'],
+            'is_pres' => $acc['president'],
+            'stats' => [['Members', count($members)], ['Pending applications', count($apps)], ['Upcoming events', count($this->orgs->upcoming($cur))], ['Announcements', count($anns)]],
+            'events' => $this->orgs->events($cur),
+            'anns' => $anns,
+            'apps' => $apps,
+            'resigns' => $this->orgs->resignations($cur),
+            'members' => $members,
+            'roles' => array_filter($this->orgs->roles(), fn($r) => $r['role_name'] != 'President')
         ]);
     }
 
-    // the info form on the settings page (POST)
-    // this used to read json from php://input, now it reads the form fields from $_POST
-    function updateInfo() {
-        $user = $this->needLogin();
-        if ($_SERVER['REQUEST_METHOD'] != 'POST') $this->go('orgsettings');
+    private function settingsPost($cur) {
+        $acc = $this->access($cur);
+        if (!$acc['manager']) return $this->flash('error', 'No management access.');
+        $a = $this->post('action');
+        $id = (int)$this->post('id');
+        $title = $this->post('title');
+        $date = $this->post('date');
 
-        $orgId = (int)($_POST['org_id'] ?? 0);
-        $userId = $user['user_id'];
-
-        // enforces role check: Only allow if the user can manage the organization
-        if (!($user['role'] == 'admin' || canManageOrg($userId, $orgId))) {
-            $this->flash('error', 'Access Denied: You do not have permission to manage this organization.');
-            $this->go('org&id=' . $orgId);
+        if ($a == 'saveinfo') {
+            if (!$acc['president']) return $this->flash('error', 'Only the president or admin can change organization information.');
+            $desc = $this->post('desc');
+            $type = $this->post('orgType');
+            if ($desc == '' || $type == '') return $this->flash('error', 'Description and organization type are required.');
+            $this->orgs->editInfo($cur, $desc, $type, $this->post('category'), $this->post('color'), isset($_POST['recruiting']) ? 1 : 0, isset($_POST['hiring']) ? 1 : 0);
+            $this->flash('success', 'Organization information updated.');
         }
-
-        $data = [
-            'description' => trim($_POST['description'] ?? ''),
-            'color' => $_POST['color'] ?? '#0b6b3a',
-            'recruiting' => isset($_POST['recruiting']) ? 1 : 0,
-            'officer_hiring' => isset($_POST['officer_hiring']) ? 1 : 0
-        ];
-
-        if ($data['description'] == '') {
-            $this->flash('error', 'Description cannot be empty');
-            $this->go('orgsettings&id=' . $orgId);
+        elseif ($a == 'saveevent') {
+            $place = $this->post('place');
+            if ($title == '' || $date == '' || $place == '') return $this->flash('error', 'Fill in all required event fields.');
+            $this->orgs->saveEvent($cur, $id, $title, $date, $this->post('time'), $place);
+            $this->flash('success', $id ? 'Event updated.' : 'Event added.');
         }
-        // color must look like #0b6b3a
-        if (!preg_match('/^#[0-9a-fA-F]{6}$/', $data['color'])) {
-            $data['color'] = '#0b6b3a';
+        elseif ($a == 'deleteevent') {
+            $this->orgs->deleteEvent($cur, $id);
+            $this->flash('info', 'Event deleted');
         }
-
-        // proceeds with updating info if authorized o7
-        $success = OrgModel::updateInfo($orgId, $data);
-
-        $this->flash($success ? 'success' : 'error', $success ? "Organization info updated successfully." : "Update failed.");
-        $this->go('orgsettings&id=' . $orgId);
-    }
-
-    // member -> officer or officer -> member (POST), president or admin only
-    function changeRole() {
-        $user = $this->needLogin();
-        if ($_SERVER['REQUEST_METHOD'] != 'POST') $this->go('orgsettings');
-
-        $orgId = (int)($_POST['org_id'] ?? 0);
-        $studentId = (int)($_POST['student_id'] ?? 0);
-        $role = $_POST['role'] ?? '';
-        $back = 'orgsettings&id=' . $orgId;
-
-        if (!($user['role'] == 'admin' || isPresident($user['user_id'], $orgId))) {
-            $this->flash('error', 'Only the president can change roles');
-            $this->go($back);
+        elseif ($a == 'saveann') {
+            $content = $this->post('content');
+            if ($title == '' || $content == '' || $date == '') return $this->flash('error', 'Complete the announcement fields.');
+            $this->orgs->saveAnn($cur, $id, $title, $content, $date, $this->post('visibility'));
+            $this->flash('success', $id ? 'Announcement updated.' : 'Announcement published.');
         }
-
-        $member = MemberModel::getMember($orgId, $studentId);
-        if (!$member) {
-            $this->flash('error', 'Member not found');
-            $this->go($back);
+        elseif ($a == 'deleteann') {
+            $this->orgs->deleteAnn($cur, $id);
+            $this->flash('info', 'Announcement deleted.');
         }
-        if ($member['role_name'] == 'President') {
-            $this->flash('error', 'You cannot change the role of the president');
-            $this->go($back);
+        elseif ($a == 'approve' || $a == 'reject') {
+            $this->orgs->decideApp($cur, $id, $a == 'approve');
+            $this->flash($a == 'approve' ? 'success' : 'info', 'Application ' . ($a == 'approve' ? 'approved' : 'rejected'));
         }
-
-        // 5 = Officer, 6 = Member
-        if ($role == 'officer') {
-            $newRoleId = 5;
-        } else if ($role == 'member') {
-            $newRoleId = 6;
-        } else {
-            $this->flash('error', 'Pick a valid role');
-            $this->go($back);
+        elseif ($a == 'accept' || $a == 'decline') {
+            $this->orgs->decideRes($cur, $id, $a == 'accept');
+            $this->flash($a == 'accept' ? 'success' : 'info', 'Resignation ' . ($a == 'accept' ? 'accepted' : 'declined'));
         }
-
-        MemberModel::changeRole($orgId, $studentId, $newRoleId);
-        $this->flash('success', 'Role changed');
-        $this->go($back);
-    }
-
-    // removes someone from the org (POST), president or admin only
-    function removeMember() {
-        $user = $this->needLogin();
-        if ($_SERVER['REQUEST_METHOD'] != 'POST') $this->go('orgsettings');
-
-        $orgId = (int)($_POST['org_id'] ?? 0);
-        $studentId = (int)($_POST['student_id'] ?? 0);
-        $back = 'orgsettings&id=' . $orgId;
-
-        if (!($user['role'] == 'admin' || isPresident($user['user_id'], $orgId))) {
-            $this->flash('error', 'Only the president can remove members');
-            $this->go($back);
+        elseif ($a == 'changerole') {
+            $role = (int)$this->post('role_id');
+            if (!$role || $role == $this->orgs->roleId('President')) return $this->flash('error', 'Invalid role.');
+            $this->orgs->setRole($cur, $id, $role);
+            $this->flash('success', 'Role updated');
         }
-
-        $member = MemberModel::getMember($orgId, $studentId);
-        if (!$member) {
-            $this->flash('error', 'Member not found');
-            $this->go($back);
+        elseif ($a == 'removemember') {
+            $this->orgs->removeMember($cur, $id);
+            $this->flash('info', 'Member removed');
         }
-        if ($member['role_name'] == 'President') {
-            $this->flash('error', 'You cannot remove the president');
-            $this->go($back);
-        }
-
-        MemberModel::removeMember($orgId, $studentId);
-        $this->flash('info', 'Member removed');
-        $this->go($back);
     }
 }

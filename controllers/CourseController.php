@@ -1,58 +1,61 @@
 <?php
-class CourseController extends Controller {
-    private $courses;
-    private $enlistments;
+require_once 'Controller.php';
 
-    function __construct($db) {
-        parent::__construct($db);
-        $this->courses = new CourseModel($db);
-        $this->enlistments = new EnlistmentModel($db);
+// courses and enlistment pages
+class CourseController extends Controller {
+
+    function offerings() {
+        $this->needLogin();
+        $q = strtolower(trim($_GET['q'] ?? ''));
+        $mode = $_GET['mode'] ?? 'all';
+        $avail = $_GET['avail'] ?? 'all';
+        $qs = $_SERVER['QUERY_STRING'] ?? '';
+        $url = 'courses.php' . ($qs ? "?$qs" : '');
+
+        if ($this->isPost()) {
+            $this->enlist();
+            $this->go($url);
+        }
+
+        $courses = [];
+        foreach ($this->courses->all() as $c) {
+            $c['sections'] = array_filter($c['sections'], function ($s) use ($c, $q, $mode, $avail) {
+                if ($q != '' && stripos($c['code'] . ' ' . $c['name'] . ' ' . $s['prof'], $q) === false) return false;
+                if ($mode != 'all' && !in_array($mode, $s['modes'])) return false;
+                return $avail == 'all' || ($avail == 'open') == ($s['slots'] > 0);
+            });
+            if ($c['sections']) $courses[] = $c;
+        }
+        $mine = array_column($this->courses->enlisted($this->user['student_id']), 'section_id');
+        return $this->data(['courses' => $courses, 'mine' => $mine, 'q' => $q, 'mode' => $mode, 'avail' => $avail, 'url' => $url]);
     }
 
-    function index() {
-        $user = $this->needLogin();
-
-        // filters from the search form
-        $q = '';
-        $mode = 'all';
-        $avail = 'all';
-        if (isset($_GET['q'])) {
-            $q = trim($_GET['q']);
-        }
-        if (isset($_GET['mode'])) {
-            $mode = $_GET['mode'];
-        }
-        if (isset($_GET['avail'])) {
-            $avail = $_GET['avail'];
-        }
-
-        $sections = $this->courses->getSections($q, $mode, $avail);
-
-        // put the sections under their course
-        $courses = [];
-        foreach ($sections as $s) {
-            $code = $s['code'];
-            if (!isset($courses[$code])) {
-                $courses[$code] = ['code' => $code, 'name' => $s['name'], 'units' => $s['units'], 'sections' => []];
+    function enlistment() {
+        $this->needRole('student');
+        if ($this->isPost()) {
+            if ($this->post('action') == 'drop') {
+                $code = $this->courses->drop($this->user['student_id'], (int)$this->post('section_id'));
+                if ($code) $this->flash('info', "Dropped $code");
             }
-            $courses[$code]['sections'][] = $s;
+            else $this->enlist();
+            $this->go('enlistment.php');
         }
 
-        // sections the student already enlisted in
-        $enlistedIds = [];
-        if ($user['role'] == 'student') {
-            $studentId = $this->enlistments->getStudentId($user['user_id']);
-            foreach ($this->enlistments->getEnlisted($studentId) as $e) {
-                $enlistedIds[] = $e['section_id'];
-            }
+        $courses = $this->courses->all();
+        $secs = [];
+        foreach ($courses as $c) {
+            foreach ($c['sections'] as $s) $secs[$c['code']][] = ['id' => $s['section_id'], 'label' => "$s[sec] | $s[days] $s[time] | $s[slots] slots"];
         }
+        $mine = $this->courses->enlisted($this->user['student_id']);
+        return $this->data(['courses' => $courses, 'secs' => $secs, 'mine' => $mine, 'units' => array_sum(array_column($mine, 'units'))]);
+    }
 
-        $this->view('courses', [
-            'courses' => $courses,
-            'enlistedIds' => $enlistedIds,
-            'q' => $q,
-            'mode' => $mode,
-            'avail' => $avail
-        ]);
+    private function enlist() {
+        if ($this->user['role'] != 'student') return $this->flash('error', 'Only students can enlist');
+        $id = (int)$this->post('section_id');
+        $err = $this->courses->enlist($this->user['student_id'], $id);
+        if ($err) return $this->flash('error', $err);
+        $s = $this->courses->sections()[$id];
+        $this->flash('success', 'Enlisted in ' . $s['code'] . ' ' . $s['sec']);
     }
 }
