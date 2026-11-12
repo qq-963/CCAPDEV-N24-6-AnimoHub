@@ -5,6 +5,9 @@ require 'config/db.php';
 
 function e($s) { return htmlspecialchars($s ?? ''); }
 
+// member 4: isPresident() and canManageOrg(), also makes $conn for the member 4 models
+require_once 'middlewares/OrgRoleMiddleware.php';
+
 foreach (glob('models/*.php') as $f) require_once $f;
 require_once 'controllers/Controller.php';
 foreach (glob('controllers/*.php') as $f) require_once $f;
@@ -31,7 +34,13 @@ $routes = [
     'apply' => ['RequestController', 'apply'],
     'resign' => ['RequestController', 'resign'],
     'requests' => ['RequestController', 'index'],
-    'decide' => ['RequestController', 'decide']
+    'decide' => ['RequestController', 'decide'],
+    'orgsettings' => ['OrgController', 'settings'],
+    'saveinfo' => ['OrgController', 'updateInfo'],
+    'changerole' => ['OrgController', 'changeRole'],
+    'removemember' => ['OrgController', 'removeMember'],
+    'event' => ['EventController', 'handleRequest'],
+    'announce' => ['AnnounceController', 'handleRequest']
 ];
 
 $page = $_GET['page'] ?? 'login';

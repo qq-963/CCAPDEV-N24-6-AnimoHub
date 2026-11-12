@@ -111,7 +111,39 @@ require 'views/layout/header.php';
       </section>
       <?php endif; ?>
 
-      <?php // TODO Member 4: the Announcements and Events cards go here ?>
+      <?php // member 4: announcements + events of this org (members-only ones are already filtered by the controller) ?>
+      <section class="card">
+        <h2>Announcements</h2>
+        <?php foreach ($announcements as $an): ?>
+        <div class="row">
+          <div>
+            <b><?= e($an['title']) ?></b>
+            <?php if ($an['visibility'] == 'members'): ?><span class="badge member">Members only</span><?php endif; ?><br>
+            <span class="muted"><?= e($an['content']) ?></span>
+          </div>
+          <span class="muted"><?= e($an['publish_date']) ?></span>
+        </div>
+        <?php endforeach; ?>
+        <?php if (empty($announcements)): ?>
+        <p class="muted">No announcements yet.</p>
+        <?php endif; ?>
+      </section>
+
+      <section class="card">
+        <h2>Events</h2>
+        <?php foreach ($events as $ev): ?>
+        <div class="row">
+          <div>
+            <b><?= e($ev['title']) ?></b><br>
+            <span class="muted"><?= e($ev['place']) ?><?= $ev['time'] ? ' | ' . e(substr($ev['time'], 0, 5)) : '' ?></span>
+          </div>
+          <span class="badge ok"><?= e($ev['date']) ?></span>
+        </div>
+        <?php endforeach; ?>
+        <?php if (empty($events)): ?>
+        <p class="muted">No events yet.</p>
+        <?php endif; ?>
+      </section>
     </div>
 
     <aside>

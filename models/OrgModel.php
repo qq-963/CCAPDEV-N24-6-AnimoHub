@@ -270,4 +270,24 @@ class OrgModel {
         $st->execute([$roleName]);
         return $st->fetchColumn();
     }
+
+    // ---------------------------------------------------------------
+    // member 4: the org info form on the org settings page
+    // ---------------------------------------------------------------
+
+    // updates what the president/officers can edit: description, color, recruiting, officer hiring
+    // static and uses $conn like the other member 4 files (OrgController::updateInfo calls it)
+    public static function updateInfo($orgId, $data) {
+        global $conn;
+        $stmt = $conn->prepare("UPDATE organization
+                                SET description = ?, color = ?, recruiting = ?, officer_hiring = ?
+                                WHERE org_id = ?");
+        return $stmt->execute([
+            $data['description'],
+            $data['color'],
+            $data['recruiting'],
+            $data['officer_hiring'],
+            $orgId
+        ]);
+    }
 }
