@@ -27,7 +27,7 @@ function lk($p, $t) {
     <?php else: echo lk('courses', 'Course Offerings'); endif; ?>
     <?= lk('organizations', 'Organizations') ?>
     <?php if ($manages) echo lk('orgsettings', 'Org Settings'); ?>
-    <?php if ($user['role'] == 'admin') echo lk('admin', 'Admin'); ?>
+    <?php if ($user['role'] == 'admin') echo lk('admin', 'Admin') . lk('adminorgs', 'Manage Orgs'); ?>
     <?= lk('profile', 'Profile') ?>
   </div>
   <div class="right">

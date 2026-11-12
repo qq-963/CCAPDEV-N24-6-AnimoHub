@@ -15,7 +15,12 @@ $routes = [
     'signup' => ['AuthController', 'signup'],
     'logout' => ['AuthController', 'logout'],
     'admin' => ['AuthController', 'admin'],
-    'dashboard' => ['DashboardController', 'index']
+    'dashboard' => ['DashboardController', 'index'],
+    'organizations' => ['OrgController', 'index'],
+    'org' => ['OrgController', 'show'],
+    'adminorgs' => ['AdminOrgController', 'index'],
+    'saveorg' => ['AdminOrgController', 'save'],
+    'deleteorg' => ['AdminOrgController', 'delete']
 ];
 
 $page = $_GET['page'] ?? 'login';
